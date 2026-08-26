@@ -10,6 +10,7 @@ import {
 	captureBookingCaptcha,
 	fillBookingForm,
 	findDoctorCandidate,
+	findDoctorCandidateByCriteria,
 	openBookingForm,
 	openSchedulePage,
 	readBookingResult,
@@ -22,7 +23,6 @@ export type RunBookingAttemptInput = {
 	emailNotifier: EmailNotifier;
 	executionId: string;
 	nodeName?: string;
-	manualCaptchaCode?: string;
 	promptForCaptcha?: (checkpoint: InteractiveCaptchaPrompt) => Promise<string | undefined>;
 };
 
@@ -47,7 +47,15 @@ export type BookingAttemptResult =
 		message: string;
 	  }
 	| {
-		status: "not-available" | "doctor-not-found";
+		status: "doctor-not-found" | "clinic-full";
+		message: string;
+	  }
+	| {
+		status: "not-available";
+		message: string;
+	  }
+	| {
+		status: "waiting-for-start";
 		message: string;
 	  }
 	| {
@@ -74,9 +82,30 @@ export async function monitorBookingUntilTerminal(
 	input: RunBookingAttemptInput,
 ): Promise<BookingAttemptResult> {
 	for (;;) {
+		const startGateResult = waitForBookingStartIfNeeded(input);
+
+		if (startGateResult) {
+			if (input.config.runOnce) {
+				return startGateResult;
+			}
+
+			const delayMs = getRetryDelayMs(input.config, false);
+			input.logger.info("booking monitor will wait for configured start time", {
+				message: startGateResult.message,
+				delayMs,
+			});
+			await sleep(delayMs);
+			continue;
+		}
+
 		const result = await runSingleBookingAttempt(input);
 
-		if (result.status === "success" || result.status === "manual-captcha-required" || result.status === "doctor-not-found") {
+		if (
+			result.status === "success"
+			|| result.status === "manual-captcha-required"
+			|| result.status === "doctor-not-found"
+			|| result.status === "clinic-full"
+		) {
 			return result;
 		}
 
@@ -104,9 +133,19 @@ async function runSingleBookingAttempt(input: RunBookingAttemptInput): Promise<B
 		const page = await browser.newPage();
 
 		await openSchedulePage(page, input.config.targetScheduleUrl);
-		const candidate = await findDoctorCandidate(page, input.config.targetDoctorName);
+		const candidate = await findDoctorCandidateByCriteria(page, {
+			doctorName: input.config.targetDoctorName,
+			appointmentDate: input.config.targetAppointmentDate,
+		});
 
 		if (!candidate) {
+			if (input.config.targetAppointmentDate) {
+				return {
+					status: "not-available",
+					message: `Target doctor/date combination is not visible yet: ${input.config.targetDoctorName} on ${input.config.targetAppointmentDate}.`,
+				};
+			}
+
 			return {
 				status: "doctor-not-found",
 				message: `Target doctor not found: ${input.config.targetDoctorName}`,
@@ -114,9 +153,16 @@ async function runSingleBookingAttempt(input: RunBookingAttemptInput): Promise<B
 		}
 
 		if (candidate.availability !== "available") {
+			if (candidate.availability === "full") {
+				return {
+					status: "clinic-full",
+					message: `Target clinic is full${candidate.appointmentDate ? ` on ${candidate.appointmentDate}` : ""} for ${candidate.doctorName}.`,
+				};
+			}
+
 			return {
 				status: "not-available",
-				message: `Target doctor is not currently available for booking (${candidate.availability}).`,
+				message: `Target doctor is not currently available for booking (${candidate.availability})${candidate.appointmentDate ? ` on ${candidate.appointmentDate}` : ""}.`,
 			};
 		}
 
@@ -129,27 +175,22 @@ async function runSingleBookingAttempt(input: RunBookingAttemptInput): Promise<B
 			birthDay: input.config.patientBirthDay,
 		});
 
-		if (!input.manualCaptchaCode && input.promptForCaptcha) {
+		if (input.promptForCaptcha) {
 			return await runInteractiveCaptchaFlow(page, candidate, input);
 		}
 
-		if (!input.manualCaptchaCode) {
-			const checkpoint = await captureAndLogCaptchaCheckpoint(page, input);
+		const checkpoint = await captureAndLogCaptchaCheckpoint(page, input);
 
-			return {
-				status: "manual-captcha-required",
-				message: checkpoint.message,
-				captchaImagePath: checkpoint.imagePath,
-				captchaArtifactPath: checkpoint.artifactPath,
-				processedImagePath: checkpoint.processedImagePath,
-				ocrSuggestedText: checkpoint.ocrSuggestedText,
-				ocrError: checkpoint.ocrError,
-				refreshAvailable: checkpoint.refreshAvailable,
-			};
-		}
-
-		await submitBookingForm(page, input.manualCaptchaCode);
-		return await finalizeBookingSubmission(page, candidate, input);
+		return {
+			status: "manual-captcha-required",
+			message: checkpoint.message,
+			captchaImagePath: checkpoint.imagePath,
+			captchaArtifactPath: checkpoint.artifactPath,
+			processedImagePath: checkpoint.processedImagePath,
+			ocrSuggestedText: checkpoint.ocrSuggestedText,
+			ocrError: checkpoint.ocrError,
+			refreshAvailable: checkpoint.refreshAvailable,
+		};
 	} finally {
 		await browser.close();
 	}
@@ -332,4 +373,21 @@ function sleep(delayMs: number): Promise<void> {
 	return new Promise((resolve) => {
 		setTimeout(resolve, delayMs);
 	});
+}
+
+function waitForBookingStartIfNeeded(input: RunBookingAttemptInput): Extract<BookingAttemptResult, { status: "waiting-for-start" }> | null {
+	if (!input.config.bookingStartAt) {
+		return null;
+	}
+
+	const now = new Date();
+
+	if (now >= input.config.bookingStartAt) {
+		return null;
+	}
+
+	return {
+		status: "waiting-for-start",
+		message: `Booking attempts are gated until ${input.config.bookingStartAt.toISOString()}. Current time: ${now.toISOString()}.`,
+	};
 }

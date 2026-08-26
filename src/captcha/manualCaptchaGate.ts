@@ -50,6 +50,7 @@ export async function captureCaptchaCheckpoint(
 			language: options.tesseractLanguage,
 			pageSegmentationMode: options.tesseractPageSegmentationMode,
 			ocrEngineMode: options.tesseractOcrEngineMode,
+			characterWhitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
 		});
 
 		ocrSuggestedText = ocrResult.text;
@@ -66,7 +67,7 @@ export async function captureCaptchaCheckpoint(
 		ocrCommand,
 		ocrError,
 		refreshAvailable,
-		message: "Manual captcha input required. Review the saved image and provide the current code through MANUAL_CAPTCHA_CODE.",
+		message: "Manual captcha input required. Review the saved image and enter the current code in the terminal prompt.",
 	};
 
 	await writeFile(artifactPath, `${JSON.stringify(checkpoint, null, 2)}\n`, "utf8");

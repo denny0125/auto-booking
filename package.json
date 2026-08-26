@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "nodemailer": "^6.9.15",
     "playwright": "^1.55.0",
     "sharp": "^0.34.3",

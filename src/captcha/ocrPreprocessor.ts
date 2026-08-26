@@ -15,8 +15,8 @@ export async function preprocessCaptchaImage(
 	options: PreprocessCaptchaOptions = {},
 ): Promise<string> {
 	const outputPath = resolve(options.outputPath ?? buildDerivedPath(inputPath));
-	const resizeMultiplier = options.resizeMultiplier ?? 3;
-	const threshold = options.threshold ?? 150;
+	const resizeMultiplier = options.resizeMultiplier ?? 4;
+	const threshold = options.threshold ?? 170;
 
 	await mkdir(dirname(outputPath), { recursive: true });
 

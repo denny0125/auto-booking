@@ -7,6 +7,7 @@ export type TesseractCliOptions = {
 	language?: string;
 	pageSegmentationMode?: number;
 	ocrEngineMode?: number;
+	characterWhitelist?: string;
 	timeoutMs?: number;
 };
 
@@ -32,6 +33,10 @@ export async function runTesseractCli(
 		"--psm",
 		String(options.pageSegmentationMode ?? 7),
 	];
+
+	if (options.characterWhitelist) {
+		args.push("-c", `tessedit_char_whitelist=${options.characterWhitelist}`);
+	}
 
 	const text = await spawnAndCollect(executable, args, options.timeoutMs ?? 15_000);
 

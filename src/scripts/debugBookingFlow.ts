@@ -1,7 +1,10 @@
 import { chromium } from "playwright";
+import { config as loadDotEnv } from "dotenv";
 
 import { openBookingForm, openSchedulePage, findDoctorCandidate, fillBookingForm, captureBookingCaptcha } from "../adapters/ntuhPageAdapter.js";
 import { parseRuntimeConfig } from "../config/runtimeConfig.js";
+
+loadDotEnv();
 
 async function snapshot(page: import("playwright").Page, label: string) {
 	const data = await page.evaluate(() => ({

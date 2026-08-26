@@ -1,9 +1,13 @@
 import { basename, resolve } from "node:path";
 
+import { config as loadDotEnv } from "dotenv";
+
 import { parseRuntimeConfig } from "../config/runtimeConfig.js";
 import { createLogger } from "../core/logger.js";
 import { preprocessCaptchaImage } from "../captcha/ocrPreprocessor.js";
 import { runTesseractCli } from "../captcha/tesseractCli.js";
+
+loadDotEnv();
 
 async function main(): Promise<void> {
 	const imagePath = process.argv[2];

@@ -4,7 +4,7 @@ import { captureCaptchaCheckpoint, type CaptchaCheckpoint } from "../captcha/man
 import { classifyBookingResult, type BookingResultClassification } from "../core/resultClassifier.js";
 import type { PatientIdType, RuntimeConfig } from "../config/runtimeConfig.js";
 
-export type DoctorAvailability = "available" | "unavailable" | "closed" | "view-only" | "unknown";
+export type DoctorAvailability = "available" | "full" | "unavailable" | "closed" | "view-only" | "unknown";
 
 export type DoctorCandidate = {
 	doctorName: string;
@@ -30,7 +30,14 @@ export async function openSchedulePage(page: Page, url: string): Promise<void> {
 }
 
 export async function findDoctorCandidate(page: Page, doctorName: string): Promise<DoctorCandidate | null> {
-	const doctorMatches = page.getByText(new RegExp(escapeForRegex(doctorName), "i"));
+	return findDoctorCandidateByCriteria(page, { doctorName });
+}
+
+export async function findDoctorCandidateByCriteria(
+	page: Page,
+	criteria: { doctorName: string; appointmentDate?: string },
+): Promise<DoctorCandidate | null> {
+	const doctorMatches = page.getByText(new RegExp(escapeForRegex(criteria.doctorName), "i"));
 	const matchCount = await doctorMatches.count();
 	let fallbackCandidate: DoctorCandidate | null = null;
 
@@ -45,13 +52,17 @@ export async function findDoctorCandidate(page: Page, doctorName: string): Promi
 		const rowText = normalizeText((await rowLocator.textContent().catch(() => "")) || (await doctorText.textContent()) || "");
 		const rowHtml = normalizeText((await rowLocator.evaluate((element) => element.outerHTML).catch(() => "")) || "");
 		const candidate: DoctorCandidate = {
-			doctorName,
+			doctorName: criteria.doctorName,
 			availability: inferAvailability(rowText, rowHtml),
 			appointmentDate: extractDate(rowText),
 			appointmentTime: extractSession(rowText),
 			rowText,
 			rowLocator,
 		};
+
+		if (criteria.appointmentDate && candidate.appointmentDate !== criteria.appointmentDate) {
+			continue;
+		}
 
 		if (candidate.availability === "available") {
 			return candidate;
@@ -192,7 +203,11 @@ export function inferAvailability(rowText: string, rowHtml = ""): DoctorAvailabi
 		return "available";
 	}
 
-	if (/not available|full|額滿/i.test(rowText)) {
+	if (/full|額滿/i.test(rowText)) {
+		return "full";
+	}
+
+	if (/not available/i.test(rowText)) {
 		return "unavailable";
 	}
 

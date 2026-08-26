@@ -45,6 +45,7 @@ const booleanFromEnv = z.preprocess((value) => {
 const rawRuntimeConfigSchema = z.object({
   TARGET_SCHEDULE_URL: z.string().trim().url("TARGET_SCHEDULE_URL must be a valid URL"),
   TARGET_DOCTOR_NAME: z.string().trim().min(1, "TARGET_DOCTOR_NAME is required"),
+  TARGET_APPOINTMENT_DATE: z.string().trim().optional().transform(emptyToUndefined),
   TARGET_DEPARTMENT: z.string().trim().optional().transform(emptyToUndefined),
   TARGET_CAMPUS: z.string().trim().optional().transform(emptyToUndefined),
   PATIENT_ID_TYPE: patientIdTypeSchema,
@@ -52,15 +53,16 @@ const rawRuntimeConfigSchema = z.object({
   PATIENT_BIRTH_YEAR: positiveIntegerFromEnv("PATIENT_BIRTH_YEAR"),
   PATIENT_BIRTH_MONTH: z.coerce.number().int("PATIENT_BIRTH_MONTH must be an integer").min(1).max(12),
   PATIENT_BIRTH_DAY: z.coerce.number().int("PATIENT_BIRTH_DAY must be an integer").min(1).max(31),
+  BOOKING_START_AT: z.string().trim().optional().transform(emptyToUndefined),
   BASE_POLL_INTERVAL_MS: positiveIntegerFromEnv("BASE_POLL_INTERVAL_MS"),
   BOOST_POLL_INTERVAL_MS: positiveIntegerFromEnv("BOOST_POLL_INTERVAL_MS"),
   BOOST_WINDOWS: z.string().trim().optional().transform(emptyToUndefined),
   HEADLESS: booleanFromEnv.default(true),
   RUN_ONCE: booleanFromEnv.default(false),
   INTERACTIVE_CAPTCHA: booleanFromEnv.default(false),
+  CAPTCHA_AUTO: booleanFromEnv.default(false),
   BROWSER_EXECUTABLE_PATH: z.string().trim().optional().transform(emptyToUndefined),
   CAPTCHA_OUTPUT_DIR: z.string().trim().optional().transform(emptyToUndefined),
-  MANUAL_CAPTCHA_CODE: z.string().trim().optional().transform(emptyToUndefined),
   TESSERACT_PATH: z.string().trim().optional().transform(emptyToUndefined),
   TESSERACT_LANGUAGE: z.string().trim().optional().transform(emptyToUndefined),
   TESSERACT_PSM: z.coerce.number().int().min(0).max(13).optional(),
@@ -87,6 +89,7 @@ export type BoostWindow = {
 export type RuntimeConfig = {
   targetScheduleUrl: string;
   targetDoctorName: string;
+  targetAppointmentDate?: string;
   targetDepartment?: string;
   targetCampus?: string;
   patientIdType: PatientIdType;
@@ -94,15 +97,16 @@ export type RuntimeConfig = {
   patientBirthYear: number;
   patientBirthMonth: number;
   patientBirthDay: number;
+  bookingStartAt?: Date;
   basePollIntervalMs: number;
   boostPollIntervalMs: number;
   boostWindows: BoostWindow[];
   headless: boolean;
   runOnce: boolean;
   interactiveCaptcha: boolean;
+  captchaAuto: boolean;
   browserExecutablePath?: string;
   captchaOutputDir: string;
-  manualCaptchaCode?: string;
   tesseract: {
     executablePath?: string;
     language: string;
@@ -182,6 +186,7 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv | Record<string, strin
   return {
     targetScheduleUrl: parsed.TARGET_SCHEDULE_URL,
     targetDoctorName: parsed.TARGET_DOCTOR_NAME,
+    targetAppointmentDate: normalizeAppointmentDate(parsed.TARGET_APPOINTMENT_DATE),
     targetDepartment: parsed.TARGET_DEPARTMENT,
     targetCampus: parsed.TARGET_CAMPUS,
     patientIdType: parsed.PATIENT_ID_TYPE,
@@ -189,19 +194,20 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv | Record<string, strin
     patientBirthYear: parsed.PATIENT_BIRTH_YEAR,
     patientBirthMonth: parsed.PATIENT_BIRTH_MONTH,
     patientBirthDay: parsed.PATIENT_BIRTH_DAY,
+    bookingStartAt: parseBookingStartAt(parsed.BOOKING_START_AT),
     basePollIntervalMs: parsed.BASE_POLL_INTERVAL_MS,
     boostPollIntervalMs: parsed.BOOST_POLL_INTERVAL_MS,
     boostWindows,
     headless: parsed.HEADLESS,
     runOnce: parsed.RUN_ONCE,
     interactiveCaptcha: parsed.INTERACTIVE_CAPTCHA,
+    captchaAuto: parsed.CAPTCHA_AUTO,
     browserExecutablePath: parsed.BROWSER_EXECUTABLE_PATH,
     captchaOutputDir: parsed.CAPTCHA_OUTPUT_DIR ?? "artifacts/captcha",
-    manualCaptchaCode: parsed.MANUAL_CAPTCHA_CODE,
     tesseract: {
       executablePath: parsed.TESSERACT_PATH,
       language: parsed.TESSERACT_LANGUAGE ?? "eng",
-      pageSegmentationMode: parsed.TESSERACT_PSM ?? 7,
+      pageSegmentationMode: parsed.TESSERACT_PSM ?? 8,
       ocrEngineMode: parsed.TESSERACT_OEM ?? 1,
     },
     smtp: {
@@ -234,4 +240,38 @@ function toMinutes(hhmm: string): number {
   }
 
   return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function normalizeAppointmentDate(value?: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const monthDayMatch = /^(\d{1,2})\/(\d{1,2})$/.exec(value);
+
+  if (monthDayMatch) {
+    return `${Number(monthDayMatch[1])}/${Number(monthDayMatch[2])}`;
+  }
+
+  const isoDateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+
+  if (isoDateMatch) {
+    return `${Number(isoDateMatch[2])}/${Number(isoDateMatch[3])}`;
+  }
+
+  throw new Error(`Invalid TARGET_APPOINTMENT_DATE format: ${value}. Expected M/D or YYYY-MM-DD.`);
+}
+
+function parseBookingStartAt(value?: string): Date | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const bookingStartAt = new Date(value);
+
+  if (Number.isNaN(bookingStartAt.getTime())) {
+    throw new Error(`Invalid BOOKING_START_AT value: ${value}. Expected an ISO-8601 datetime.`);
+  }
+
+  return bookingStartAt;
 }
