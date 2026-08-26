@@ -40,12 +40,48 @@ describe("inferAvailability", () => {
 		expect(candidate?.appointmentDate).toBe("9/8");
 		expect(candidate?.availability).toBe("available");
 	});
+
+	it("extracts appointment date from a nearby date container when the doctor card text omits it", async () => {
+		const candidatePage = createCandidateLookupPage([
+			{
+				visible: true,
+				textContent: "張 為淵 | 02 診 消化科 | 普通門診",
+				outerHTML: '<button class="doctor-tag avaliable" onclick="window.location.href=\'RegForm?newx=target\';">前往掛號</button>',
+				ancestors: [
+					{ visible: true, textContent: "張 為淵 | 02 診 消化科 | 普通門診" },
+					{ visible: true, textContent: "9/9 星期三 上午門診 張 為淵 | 02 診 消化科 | 普通門診" },
+				],
+			},
+		]);
+
+		const candidate = await findDoctorCandidateByCriteria(candidatePage, {
+			doctorName: "張為淵",
+			appointmentDate: "9/9",
+		});
+
+		expect(candidate?.appointmentDate).toBe("9/9");
+		expect(candidate?.availability).toBe("available");
+	});
 });
 
 function createCandidateLookupPage(entries) {
 	const locators = entries.map((entry) => createDoctorTextLocator(entry));
 
 	return {
+		locator() {
+			return {
+				filter() {
+					return {
+						async count() {
+							return locators.length;
+						},
+						 nth(index) {
+							return locators[index];
+						},
+					};
+				},
+			};
+		},
 		getByText() {
 			return {
 				async count() {
@@ -60,6 +96,21 @@ function createCandidateLookupPage(entries) {
 }
 
 function createDoctorTextLocator(entry) {
+	const ancestorLocators = (entry.ancestors ?? []).map((ancestor) => ({
+		async textContent() {
+			return ancestor.textContent;
+		},
+		async isVisible() {
+			return ancestor.visible;
+		},
+		first() {
+			return this;
+		},
+		locator() {
+			return { first: () => this };
+		},
+	}));
+
 	const rowLocator = {
 		async textContent() {
 			return entry.textContent;
@@ -70,6 +121,27 @@ function createDoctorTextLocator(entry) {
 		async isVisible() {
 			return entry.visible;
 		},
+		first() {
+			return this;
+		},
+		locator(selector) {
+			const ancestorMatch = /ancestor::(?:div\[(\d+)\]|section\[1\])/.exec(selector);
+
+			if (ancestorMatch) {
+				const ancestorIndex = ancestorMatch[1] ? Number(ancestorMatch[1]) - 1 : ancestorLocators.length - 1;
+				return {
+					first() {
+						return ancestorLocators[ancestorIndex] ?? rowLocator;
+					},
+				};
+			}
+
+			return {
+				first() {
+					return rowLocator;
+				},
+			};
+		},
 	};
 
 	return {
@@ -79,12 +151,8 @@ function createDoctorTextLocator(entry) {
 		async textContent() {
 			return entry.textContent;
 		},
-		locator() {
-			return {
-				first() {
-					return rowLocator;
-				},
-			};
+		locator(selector) {
+			return rowLocator.locator(selector);
 		},
 	};
 }

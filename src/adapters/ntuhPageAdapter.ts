@@ -37,7 +37,7 @@ export async function findDoctorCandidateByCriteria(
 	page: Page,
 	criteria: { doctorName: string; appointmentDate?: string },
 ): Promise<DoctorCandidate | null> {
-	const doctorMatches = page.getByText(new RegExp(escapeForRegex(criteria.doctorName), "i"));
+	const doctorMatches = getDoctorMatches(page, criteria.doctorName);
 	const matchCount = await doctorMatches.count();
 	let fallbackCandidate: DoctorCandidate | null = null;
 
@@ -50,13 +50,14 @@ export async function findDoctorCandidateByCriteria(
 
 		const rowLocator = await resolveDoctorCardLocator(doctorText);
 		const rowText = normalizeText((await rowLocator.textContent().catch(() => "")) || (await doctorText.textContent()) || "");
+		const contextText = await resolveCandidateContextText(rowLocator, rowText, criteria.doctorName, criteria.appointmentDate);
 		const rowHtml = normalizeText((await rowLocator.evaluate((element) => element.outerHTML).catch(() => "")) || "");
 		const candidate: DoctorCandidate = {
 			doctorName: criteria.doctorName,
 			availability: inferAvailability(rowText, rowHtml),
-			appointmentDate: extractDate(rowText),
-			appointmentTime: extractSession(rowText),
-			rowText,
+			appointmentDate: extractDate(contextText) ?? extractDate(rowText),
+			appointmentTime: extractSession(contextText) ?? extractSession(rowText),
+			rowText: contextText,
 			rowLocator,
 		};
 
@@ -74,6 +75,16 @@ export async function findDoctorCandidateByCriteria(
 	return fallbackCandidate;
 }
 
+function getDoctorMatches(page: Page, doctorName: string): Locator {
+	const doctorPattern = new RegExp(escapeForRegex(doctorName), "i");
+
+	if (typeof page.locator === "function") {
+		return page.locator("button.doctor-tag, a.doctor-tag, .doctor-tag").filter({ hasText: doctorPattern });
+	}
+
+	return page.getByText(doctorPattern);
+}
+
 async function resolveDoctorCardLocator(doctorText: Locator): Promise<Locator> {
 	const candidates = [
 		doctorText.locator("xpath=ancestor::button[contains(@class, 'doctor-tag')][1]").first(),
@@ -88,6 +99,50 @@ async function resolveDoctorCardLocator(doctorText: Locator): Promise<Locator> {
 	}
 
 	return candidates[candidates.length - 1];
+}
+
+async function resolveCandidateContextText(
+	rowLocator: Locator,
+	fallbackText: string,
+	doctorName: string,
+	targetDate?: string,
+): Promise<string> {
+	const contextLocators = [
+		rowLocator.locator("xpath=ancestor::div[1]").first(),
+		rowLocator.locator("xpath=ancestor::div[2]").first(),
+		rowLocator.locator("xpath=ancestor::div[3]").first(),
+		rowLocator.locator("xpath=ancestor::section[1]").first(),
+	];
+
+	for (const contextLocator of contextLocators) {
+		if (!(await contextLocator.isVisible().catch(() => false))) {
+			continue;
+		}
+
+		const contextText = normalizeText((await contextLocator.textContent().catch(() => "")) || "");
+
+		if (!contextText || !containsCollapsedText(contextText, doctorName)) {
+			continue;
+		}
+
+		if (contextText.length > 300) {
+			continue;
+		}
+
+		if (targetDate) {
+			if (contextText.includes(targetDate)) {
+				return contextText;
+			}
+
+			continue;
+		}
+
+		if (extractDate(contextText)) {
+			return contextText;
+		}
+	}
+
+	return fallbackText;
 }
 
 export async function openBookingForm(page: Page, candidate: DoctorCandidate): Promise<void> {
@@ -269,6 +324,14 @@ function extractSession(rowText: string): string | undefined {
 
 function normalizeText(value: string): string {
 	return value.replace(/\s+/g, " ").trim();
+}
+
+function containsCollapsedText(value: string, expected: string): boolean {
+	return collapseTextForMatch(value).includes(collapseTextForMatch(expected));
+}
+
+function collapseTextForMatch(value: string): string {
+	return value.replace(/\s+/g, "").trim().toLowerCase();
 }
 
 function escapeForRegex(value: string): string {
