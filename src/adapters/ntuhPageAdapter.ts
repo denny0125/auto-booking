@@ -25,8 +25,8 @@ export type BookingFormInput = {
 };
 
 export async function openSchedulePage(page: Page, url: string): Promise<void> {
-	await page.goto(url, { waitUntil: "domcontentloaded" });
-	await page.waitForLoadState("networkidle").catch(() => undefined);
+	await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 });
+	await page.waitForLoadState("domcontentloaded").catch(() => undefined);
 }
 
 export async function findDoctorCandidate(page: Page, doctorName: string): Promise<DoctorCandidate | null> {
@@ -51,13 +51,15 @@ export async function findDoctorCandidateByCriteria(
 		const rowLocator = await resolveDoctorCardLocator(doctorText);
 		const rowText = normalizeText((await rowLocator.textContent().catch(() => "")) || (await doctorText.textContent()) || "");
 		const contextText = await resolveCandidateContextText(rowLocator, rowText, criteria.doctorName, criteria.appointmentDate);
+		const nearbyScheduleText = await resolveNearbyScheduleText(rowLocator);
 		const rowHtml = normalizeText((await rowLocator.evaluate((element) => element.outerHTML).catch(() => "")) || "");
+		const scheduleText = normalizeText([contextText, nearbyScheduleText, rowText].filter(Boolean).join(" "));
 		const candidate: DoctorCandidate = {
 			doctorName: criteria.doctorName,
 			availability: inferAvailability(rowText, rowHtml),
-			appointmentDate: extractDate(contextText) ?? extractDate(rowText),
-			appointmentTime: extractSession(contextText) ?? extractSession(rowText),
-			rowText: contextText,
+			appointmentDate: extractDate(scheduleText),
+			appointmentTime: extractSession(scheduleText),
+			rowText: scheduleText,
 			rowLocator,
 		};
 
@@ -145,6 +147,43 @@ async function resolveCandidateContextText(
 	return fallbackText;
 }
 
+async function resolveNearbyScheduleText(rowLocator: Locator): Promise<string> {
+	const nearbyText = await rowLocator.evaluate((element) => {
+		const texts: string[] = [];
+		const signalPattern = /\b\d{1,2}\/\d{1,2}\b|Morning|Afternoon|Evening|上午|下午|晚間/i;
+		const datePattern = /\b\d{1,2}\/\d{1,2}\b/;
+		let current: Element | null = element;
+
+		for (let depth = 0; current && depth < 6; depth += 1) {
+			const sibling = current.previousElementSibling;
+
+			if (!sibling) {
+				current = current.parentElement;
+				continue;
+			}
+
+			const text = sibling.textContent?.replace(/\s+/g, " ").trim() ?? "";
+
+			if (!text || text.length > 120 || !signalPattern.test(text)) {
+				current = current.parentElement;
+				continue;
+			}
+
+			texts.unshift(text);
+
+			if (datePattern.test(text)) {
+				break;
+			}
+
+			current = current.parentElement;
+		}
+
+		return texts.join(" ");
+	}).catch(() => "");
+
+	return normalizeText(nearbyText);
+}
+
 export async function openBookingForm(page: Page, candidate: DoctorCandidate): Promise<void> {
 	const clickableCandidates = [
 		candidate.rowLocator.getByRole("link", { name: /掛號|appointment|available/i }).first(),
@@ -178,7 +217,6 @@ async function clickIntoBookingForm(page: Page, locator: Locator): Promise<void>
 		timeout: 10000,
 	}).catch(() => undefined);
 	await page.waitForLoadState("domcontentloaded").catch(() => undefined);
-	await page.waitForLoadState("networkidle").catch(() => undefined);
 }
 
 export async function fillBookingForm(page: Page, input: BookingFormInput): Promise<void> {
@@ -208,7 +246,8 @@ export async function fillBookingForm(page: Page, input: BookingFormInput): Prom
 
 export async function captureBookingCaptcha(
 	page: Page,
-	config: Pick<RuntimeConfig, "captchaOutputDir" | "tesseract">,
+	config: Pick<RuntimeConfig, "captchaOutputDir" | "tesseract" | "captchaAuto">,
+	persistToDisk = !config.captchaAuto,
 ): Promise<CaptchaCheckpoint> {
 	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 	return captureCaptchaCheckpoint(page, {
@@ -217,15 +256,47 @@ export async function captureBookingCaptcha(
 		tesseractLanguage: config.tesseract.language,
 		tesseractPageSegmentationMode: config.tesseract.pageSegmentationMode,
 		tesseractOcrEngineMode: config.tesseract.ocrEngineMode,
-	});
+	}, persistToDisk);
 }
 
+const PATIENT_ID_SELECTORS = [
+	"#txtInputID",
+	"input[placeholder*='身分證']",
+	"input[placeholder*='ID Number']",
+	"input[placeholder*='證件號碼']",
+	"input[name*='ID']",
+	"input[id*='ID']",
+	"input[placeholder*='身份證']",
+];
+
+const CAPTCHA_INPUT_SELECTORS = [
+	"#validText",
+	"input[placeholder*='驗證碼']",
+	"input[placeholder*='驗證']",
+	"input[placeholder*='verification code']",
+	"input[placeholder*='captcha']",
+	"input[aria-label*='驗證']",
+	"input[aria-label*='captcha']",
+	"input[name*='Valid']",
+	"input[name*='valid']",
+	"input[name*='Captcha']",
+	"input[name*='captcha']",
+	"input[id*='Valid']",
+	"input[id*='valid']",
+	"input[id*='Captcha']",
+	"input[id*='captcha']",
+	"input[id*='Code']",
+	"input[name*='Code']",
+	"input[maxlength='4']",
+	"input[maxlength='5']",
+	"input[type='text'][inputmode='numeric']",
+	"input[type='tel']",
+	"input[type='number']",
+	"input[role='textbox']",
+];
+
 export async function submitBookingForm(page: Page, captchaCode: string): Promise<void> {
-	await fillFirstVisible(page, [
-		"input[placeholder*='驗證碼']",
-		"input[placeholder*='verification code']",
-		"input[name*='Valid']",
-	], captchaCode);
+	await fillFirstVisible(page, CAPTCHA_INPUT_SELECTORS, captchaCode, 2_000);
 
 	const submitCandidates = [
 		page.getByRole("button", { name: /送出|submit/i }).first(),
@@ -245,8 +316,28 @@ export async function submitBookingForm(page: Page, captchaCode: string): Promis
 }
 
 export async function readBookingResult(page: Page): Promise<BookingResultClassification> {
-	const text = normalizeText((await page.locator("body").textContent()) ?? "");
-	return classifyBookingResult(text);
+	const bodyLocator = page.locator("body");
+	const visibleText = normalizeText(await bodyLocator.evaluate((element) => {
+		if (!(element instanceof HTMLElement)) {
+			return element?.textContent ?? "";
+		}
+
+		return element.innerText || element.textContent || "";
+	}).catch(() => ""));
+	const fallbackText = normalizeText((await bodyLocator.textContent().catch(() => "")) ?? "");
+	const text = visibleText || fallbackText;
+	const result = classifyBookingResult(text);
+
+	if (result.kind === "success" && await isBookingFormStillVisible(page)) {
+		return {
+			kind: "unknown",
+			message: text || "Booking form remained visible after submission.",
+			shouldRetry: true,
+			terminal: false,
+		};
+	}
+
+	return result;
 }
 
 export function inferAvailability(rowText: string, rowHtml = ""): DoctorAvailability {
@@ -299,7 +390,7 @@ async function selectPatientIdType(page: Page, patientIdType: PatientIdType): Pr
 	throw new Error(`Unable to select patient id type: ${patientIdType}`);
 }
 
-async function fillFirstVisible(page: Page, selectors: string[], value: string): Promise<void> {
+async function fillFirstVisible(page: Page, selectors: string[], value: string, waitTimeoutMs = 0): Promise<void> {
 	for (const selector of selectors) {
 		const locator = page.locator(selector).first();
 
@@ -307,6 +398,42 @@ async function fillFirstVisible(page: Page, selectors: string[], value: string):
 			await locator.fill(value);
 			return;
 		}
+	}
+
+	if (waitTimeoutMs > 0) {
+		for (const selector of selectors) {
+			const locator = page.locator(selector).first();
+
+			if (await locator.waitFor({ state: "visible", timeout: waitTimeoutMs }).then(() => true).catch(() => false)) {
+				await locator.fill(value);
+				return;
+			}
+		}
+	}
+
+	// Heuristic fallback: find visible text nodes that mention captcha and search nearby for an input
+	try {
+		const captchaLabel = page.getByText(/驗證碼|驗證|verification code|captcha/i).first();
+
+		if (await captchaLabel.isVisible().catch(() => false)) {
+			// Search within the label's ancestor containers for an input
+			const ancestorInput = captchaLabel.locator("xpath=ancestor::*[1]//input").first();
+
+			if (await ancestorInput.isVisible().catch(() => false)) {
+				await ancestorInput.fill(value);
+				return;
+			}
+
+			// Try following nodes (label then input sibling)
+			const siblingInput = captchaLabel.locator("xpath=following::input[1]").first();
+
+			if (await siblingInput.isVisible().catch(() => false)) {
+				await siblingInput.fill(value);
+				return;
+			}
+		}
+	} catch (e) {
+		// ignore heuristic errors and fall through to throwing below
 	}
 
 	throw new Error(`Unable to find input for selectors: ${selectors.join(", ")}`);
@@ -339,15 +466,54 @@ function escapeForRegex(value: string): string {
 }
 
 async function waitForBookingForm(page: Page): Promise<void> {
-	const patientIdSignal = page.locator("#txtInputID, input[placeholder*='身分證'], input[placeholder*='ID Number']").first();
-	const captchaSignal = page.locator("#validText, input[placeholder*='驗證碼']").first();
+	const patientIdReady = await waitForAnyVisible(page, PATIENT_ID_SELECTORS, 10_000);
+	const captchaReady = await waitForAnyVisible(page, CAPTCHA_INPUT_SELECTORS, 10_000);
+	const formUrlReady = /RegForm|regform|appointment/i.test(page.url());
 
-	const patientIdReady = await patientIdSignal.waitFor({ state: "visible", timeout: 10000 }).then(() => true).catch(() => false);
-	const captchaReady = await captchaSignal.waitFor({ state: "visible", timeout: 10000 }).then(() => true).catch(() => false);
-
-	if (patientIdReady && captchaReady) {
+	if (patientIdReady || captchaReady || formUrlReady) {
 		return;
 	}
 
-	throw new Error("Booking form did not become fully visible after selecting a target row");
+	throw new Error(
+		`Booking form did not become fully visible after selecting a target row. Expected patient or captcha inputs, but not found in ${page.url()}.`,
+	);
+}
+
+async function waitForAnyVisible(page: Page, selectors: string[], timeoutMs: number): Promise<boolean> {
+	for (const selector of selectors) {
+		const locator = page.locator(selector).first();
+		if (await locator.waitFor({ state: "visible", timeout: 300 }).then(() => true).catch(() => false)) {
+			return true;
+		}
+	}
+
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		for (const selector of selectors) {
+			const locator = page.locator(selector).first();
+			if (await locator.isVisible().catch(() => false)) {
+				return true;
+			}
+		}
+		await page.waitForTimeout(250).catch(() => undefined);
+	}
+
+	return false;
+}
+
+async function isBookingFormStillVisible(page: Page): Promise<boolean> {
+	const signals = [
+		page.locator("#txtInputID").first(),
+		page.locator("input[placeholder*='身分證']").first(),
+		page.locator("input[placeholder*='ID Number']").first(),
+		...CAPTCHA_INPUT_SELECTORS.map((selector) => page.locator(selector).first()),
+	];
+
+	for (const signal of signals) {
+		if (await signal.isVisible().catch(() => false)) {
+			return true;
+		}
+	}
+
+	return false;
 }
